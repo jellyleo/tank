@@ -163,12 +163,13 @@
         const TILE = 48;
         const COLS = 13;
         const ROWS = 13;
+        const RESPAWN_DELAY = 90; // 重生等待帧数 (约1.5秒 @60fps)
+        const INVINCIBLE_DURATION = 180; // 无敌持续帧数 (约3秒)
 
         // 游戏状态
         const SCREEN = { START: 'start', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover' };
         let currentScreen = SCREEN.START;
         let animationId = null;
-        let respawnTimerId = null;
 
         // 游戏数据
         let score = 0;
@@ -185,6 +186,7 @@
         let base = null;
         let keys = {};
         let enemySpawnTimer = 0;
+        let respawnFrames = 0; // 重生倒计时帧数，0表示不需要重生
 
         // 地图设计
         const maps = [
@@ -262,22 +264,18 @@
                 else if (this.direction === 'left') angle = -Math.PI / 2;
                 ctx.rotate(angle);
 
-                // 履带
                 ctx.fillStyle = darken(this.color, 30);
                 ctx.fillRect(-this.width/2, -this.height/2, 8, this.height);
                 ctx.fillRect(this.width/2 - 8, -this.height/2, 8, this.height);
 
-                // 主体
                 ctx.fillStyle = this.color;
                 ctx.fillRect(-this.width/2 + 8, -this.height/2, this.width - 16, this.height);
 
-                // 炮塔
                 ctx.fillStyle = lighten(this.color, 30);
                 ctx.beginPath();
                 ctx.arc(0, 0, 10, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 炮管
                 ctx.fillStyle = lighten(this.color, 50);
                 ctx.fillRect(-3, -this.height/2 - 10, 6, this.height/2 + 10);
 
@@ -423,6 +421,20 @@
             }
         }
 
+        // 重生玩家
+        function respawnPlayer() {
+            const spawnX = TILE * 4;
+            const spawnY = TILE * 11;
+            for (const enemy of enemies) {
+                if (enemy.alive && Math.abs(enemy.x - spawnX) < TILE * 2 && Math.abs(enemy.y - spawnY) < TILE * 2) {
+                    enemy.x = Math.max(0, Math.min(canvas.width - enemy.width, enemy.x + (enemy.x < spawnX ? -TILE * 2 : TILE * 2)));
+                }
+            }
+            player = new Tank(spawnX, spawnY, '#00d2ff', true);
+            player.invincible = INVINCIBLE_DURATION;
+            respawnFrames = 0;
+        }
+
         // 更新子弹
         function updateBullets() {
             for (let i = bullets.length - 1; i >= 0; i--) {
@@ -504,23 +516,7 @@
                         if (lives <= 0) {
                             endGame('lives');
                         } else {
-                            // 延迟重生
-                            if (respawnTimerId) clearTimeout(respawnTimerId);
-                            respawnTimerId = setTimeout(() => {
-                                if (currentScreen === SCREEN.PLAYING) {
-                                    const spawnX = TILE * 4;
-                                    const spawnY = TILE * 11;
-                                    // 把附近的敌人推开
-                                    for (const enemy of enemies) {
-                                        if (enemy.alive && Math.abs(enemy.x - spawnX) < TILE * 2 && Math.abs(enemy.y - spawnY) < TILE * 2) {
-                                            enemy.x = Math.max(0, Math.min(canvas.width - enemy.width, enemy.x + (enemy.x < spawnX ? -TILE * 2 : TILE * 2)));
-                                        }
-                                    }
-                                    player = new Tank(spawnX, spawnY, '#00d2ff', true);
-                                    player.invincible = 180; // 3秒无敌
-                                    respawnTimerId = null;
-                                }
-                            }, 1500);
+                            respawnFrames = RESPAWN_DELAY;
                         }
                         continue;
                     }
@@ -616,9 +612,10 @@
             bullets = [];
             explosions = [];
             enemies = [];
+            respawnFrames = 0;
             initMap();
             player = new Tank(TILE * 4, TILE * 11, '#00d2ff', true);
-            player.invincible = 180;
+            player.invincible = INVINCIBLE_DURATION;
             updateUI();
         }
 
@@ -629,10 +626,7 @@
                 cancelAnimationFrame(animationId);
                 animationId = null;
             }
-            if (respawnTimerId) {
-                clearTimeout(respawnTimerId);
-                respawnTimerId = null;
-            }
+            respawnFrames = 0;
             const title = document.querySelector('#gameOverScreen h1');
             title.textContent = reason === 'base' ? '基地被毁！' : '生命耗尽！';
             document.getElementById('finalScore').textContent = score;
@@ -644,50 +638,62 @@
         function gameLoop() {
             if (currentScreen !== SCREEN.PLAYING) return;
 
-            // 生成敌人
-            enemySpawnTimer++;
-            if (enemySpawnTimer > 120) {
-                enemySpawnTimer = 0;
-                spawnEnemy();
-            }
+            try {
+                // 生成敌人
+                enemySpawnTimer++;
+                if (enemySpawnTimer > 120) {
+                    enemySpawnTimer = 0;
+                    spawnEnemy();
+                }
 
-            // 玩家输入
-            if (player && player.alive) {
-                if (player.invincible > 0) player.invincible--;
-                if (keys['w'] || keys['arrowup']) player.move('up');
-                if (keys['s'] || keys['arrowdown']) player.move('down');
-                if (keys['a'] || keys['arrowleft']) player.move('left');
-                if (keys['d'] || keys['arrowright']) player.move('right');
-                if (keys[' ']) player.shoot();
-            }
+                // 重生倒计时
+                if (respawnFrames > 0) {
+                    respawnFrames--;
+                    if (respawnFrames <= 0) {
+                        respawnPlayer();
+                    }
+                }
 
-            // 敌人AI
-            for (const enemy of enemies) {
-                updateEnemyAI(enemy);
-            }
+                // 玩家输入
+                if (player && player.alive) {
+                    if (player.invincible > 0) player.invincible--;
+                    if (keys['w'] || keys['arrowup']) player.move('up');
+                    if (keys['s'] || keys['arrowdown']) player.move('down');
+                    if (keys['a'] || keys['arrowleft']) player.move('left');
+                    if (keys['d'] || keys['arrowright']) player.move('right');
+                    if (keys[' ']) player.shoot();
+                }
 
-            updateBullets();
-            updateExplosions();
+                // 敌人AI
+                for (const enemy of enemies) {
+                    updateEnemyAI(enemy);
+                }
 
-            // 绘制
-            drawMap();
-            if (player && player.alive) player.draw();
-            for (const enemy of enemies) {
-                if (enemy.alive) enemy.draw();
-            }
-            drawBullets();
-            drawExplosions();
+                updateBullets();
+                updateExplosions();
 
-            // 重生提示
-            if (player && !player.alive && lives > 0 && respawnTimerId) {
-                ctx.save();
-                ctx.fillStyle = 'rgba(0,0,0,0.5)';
-                ctx.fillRect(0, canvas.height / 2 - 40, canvas.width, 80);
-                ctx.fillStyle = '#0fff50';
-                ctx.font = 'bold 28px Microsoft YaHei';
-                ctx.textAlign = 'center';
-                ctx.fillText(`复活中... 剩余生命: ${lives}`, canvas.width / 2, canvas.height / 2 + 10);
-                ctx.restore();
+                // 绘制
+                drawMap();
+                if (player && player.alive) player.draw();
+                for (const enemy of enemies) {
+                    if (enemy.alive) enemy.draw();
+                }
+                drawBullets();
+                drawExplosions();
+
+                // 重生提示
+                if (respawnFrames > 0 && lives > 0) {
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                    ctx.fillRect(0, canvas.height / 2 - 40, canvas.width, 80);
+                    ctx.fillStyle = '#0fff50';
+                    ctx.font = 'bold 28px Microsoft YaHei';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`复活中... 剩余生命: ${lives}`, canvas.width / 2, canvas.height / 2 + 10);
+                    ctx.restore();
+                }
+            } catch (e) {
+                console.error('Game loop error:', e);
             }
 
             animationId = requestAnimationFrame(gameLoop);
@@ -695,14 +701,9 @@
 
         // 开始游戏
         function startGame() {
-            // 清理旧状态
             if (animationId) {
                 cancelAnimationFrame(animationId);
                 animationId = null;
-            }
-            if (respawnTimerId) {
-                clearTimeout(respawnTimerId);
-                respawnTimerId = null;
             }
 
             // 重置数据
@@ -716,6 +717,7 @@
             explosions = [];
             enemies = [];
             enemySpawnTimer = 0;
+            respawnFrames = 0;
 
             // 切换界面
             document.getElementById('startScreen').style.display = 'none';
@@ -726,7 +728,7 @@
             // 初始化
             initMap();
             player = new Tank(TILE * 4, TILE * 11, '#00d2ff', true);
-            player.invincible = 180;
+            player.invincible = INVINCIBLE_DURATION;
             updateUI();
 
             // 开始游戏循环
